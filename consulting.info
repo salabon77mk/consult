@@ -1,0 +1,6 @@
+name = Consulting
+description = Consulting module that connects users with consultants based on webform submissions
+core = 7.x
+package = My Modules
+dependencies[] = webform:webform
+

@@ -1,13 +1,15 @@
+<?php
+
 /**
  * Implements hook_menu().
  */
 function consulting_menu(){
      $items = array();
 
-  $items['helloworld'] = array(
-    'title' => 'Hello World',
+  $items['consulting'] = array(
+    'title' => 'Consulting',
     'access callback' => TRUE,
-    'page callback' => 'helloworld_hello_page',
+    'page callback' => 'consulting_hello_page',
     'type' => MENU_NORMAL_ITEM,
     'menu' => 'navigation',
   );
@@ -15,6 +17,173 @@ function consulting_menu(){
   return $items;
 }
 
-function helloworld_hello_page() {
-  return t('Hello World. Welcome to Drupal.');
+/*
+* The 'main' function. 
+* How it works:
+* 1) Retrieve current user's survey submissions
+* 2) Use that information to pair up with a consultant
+* 3) Output a table with emails of consultants the user can 
+*    get into contact with
+*
+*/
+function consulting_hello_page() {
+  //Contains user information that we use to retrieve their data
+  global $user;
+
+  $userSID = getUserSID($user);  
+
+  //Displays if user never submitted a survey
+  if($userSID == 0){
+    return t("It looks like you have not submitted a survey! Click on the account button and fill it out the survey so we can match consultants with you.");
+  }
+   
+
+  //[0] = email
+  //[1] = name
+  //[2] = desired country (abbreviated)
+  $userData = getUserSubmissionData($userSID);
+
+  //[0] = name
+  //[1] = email
+  $consultants = getConsultants($userData[2]);
+
+  //This will only execute if there are no eligible consultants
+  if($consultants == 0){
+    return t("Sorry, there are no consultants for your desired country.");
+  }
+
+
+  //Columns and rows
+  $header = array("<b>Consultant name</b>", "<b>Consultant Email</b>");
+  $rows = array();
+
+  //Fill the rows with data
+  for($i = 0; $i < count($consultants) - 1; $i += 2){
+    $name = $consultants[$i];
+    $email = "<a href=mailto:" . $consultants[$i + 1] . ">" . $consultants[$i+1] . "</a>";
+
+    $rows[] = array($name, $email);
+  }
+
+  //output the table
+  return theme('table', array('header' => $header, 'rows' => $rows));
 }
+
+/*
+*
+* Takes in the $user
+* We use their uid to find their sid from {webform_submissions} table
+* We have to go through this table becaus uid column is absent from
+* {webform_submitted_data}
+*
+* returns $subSID: will be used in getUserSubmissionData to retrieve their
+*                  submission data
+*
+*/
+function getUserSID($user){
+  $submissionQuery = "SELECT sid FROM {webform_submissions} WHERE uid = :uid";
+  $subSID = db_query($submissionQuery, array("uid" => $user->uid))->fetchCol();
+  //$subSID = db_query($submissionQuery, array("uid" => $user->uid))->fetchField();
+
+  //This indicates user has not submitted a survey
+  if($subSID[0] == false){
+    return 0;
+  }
+
+  //get the most recent sid
+  $arrLength = count($subSID);
+
+  return $subSID[$arrLength - 1];
+}
+
+/*
+* Takes in the user's sid and retrieves their
+* email, name, desired country to study abroad in
+*
+* Important variables:
+*     cid (component id): the id for a particular survey field
+*                         eg cid 17 is where we ask the user's to input 
+*                         their email on the webform
+*
+*
+*/
+function getUserSubmissionData($sid){
+  //bonusVariables
+  //$desiredEduLevelQuery = "SELECT data FROM {webform_submitted_data} WHERE cid = 4";
+  //$desiredEduLevel;
+
+  $emailQuery = "SELECT data FROM {webform_submitted_data} WHERE (cid = :cid AND sid = :sid)";
+  $userPrefNameQuery = "SELECT data FROM {webform_submitted_data} WHERE (cid = :cid AND sid = :sid)";
+  
+  $desiredCountryQuery = "SELECT data FROM {webform_submitted_data} WHERE (cid = :cid AND sid = :sid)";
+
+  $userEmail = db_query($emailQuery, array("cid" => 17, "sid" => $sid))->fetchField();
+  $userPrefName = db_query($emailQuery, array("cid" => 3, "sid" => $sid))->fetchField();
+  //$isMentor = db_query($emailQuery, array("cid" => 8, "sid" => $sid))->fetchField();
+  $desiredCountry = db_query($emailQuery, array("cid" => 9, "sid" => $sid))->fetchField();
+
+  return $subData = array($userEmail, $userPrefName, $desiredCountry);
+}
+
+/*
+*
+* The meat, the sorting algorithm. 
+* It MUST match up users and consultants who have the same desired country
+* Currently it matches up users with consultants who both have the same desired country
+* 
+* After that, it should be easy for people to further fine tune the sorting algorithm
+* by creating additional requirements (maybe if user and consultant with the same interest).
+* If that is desired, it's recommended to add code AFTER the first foreach loop
+* 
+*/
+function getConsultants($country){
+  $eligibleConsultants = array();
+  $consultantNames = array();
+  $consultantEmails = array();
+  $finalArray = array(); //has names and emails
+
+  //This will get a list of all consultants based on their SID
+  $consultantSIDQuery = "SELECT sid FROM {webform_submitted_data} WHERE (cid = :cid AND data = :data)";
+  $consultantSIDs = db_query($consultantSIDQuery, array("cid" => 8, "data" => 1))->fetchCol();
+  
+
+  //Creates an array of consultants that have the same country as our user
+  foreach($consultantSIDs as $sid){  
+    $countryQuery = "SELECT sid FROM {webform_submitted_data} WHERE (cid = :cid AND data = :data AND sid = :sid)";
+    $consultant = db_query($countryQuery, array("cid" => 9, "data" => $country, "sid" => $sid))->fetchField();
+    
+    $eligibleConsultants[] = $consultant;
+  }
+
+  //Have to break out if there are no consultants from the same country(first result will be false
+  //if there are no eligible consultants)
+  if($eligibleConsultants[0] == false){
+    return 0;
+  }
+  
+  
+  //create two arrays that we will later glue together for processing from above
+  //these arrays contain the email and names of consultants
+  foreach($eligibleConsultants as $sid){
+    $consultantNameQuery = "SELECT data FROM {webform_submitted_data} WHERE (cid = :cid AND sid = :sid)";
+    $consultantEmailQuery = "SELECT data FROM {webform_submitted_data} WHERE (cid = :cid AND sid = :sid)";
+
+    $name = db_query($consultantNameQuery, array("cid" => 3, "sid" => $sid))->fetchField();
+    $email = db_query($consultantEmailQuery, array("cid" => 17, "sid" => $sid))->fetchField();
+
+    $consultantNames[] = $name;
+    $consultantEmails[] = $email;
+  }
+
+  //create an array that has names and consultant
+  for($i = 0; $i < count($consultantNames); $i++){
+    $finalArray[] = $consultantNames[$i];
+    $finalArray[] = $consultantEmails[$i];
+  }
+
+  return $finalArray;
+}
+
+
+
+//mkmkmkmkmkmkmkmkmkmkmkmkmkmkmkmkmkmk
